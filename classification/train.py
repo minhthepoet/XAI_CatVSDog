@@ -21,6 +21,10 @@ import torch
 import torch.nn as nn
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
+try:
+    from tqdm.auto import tqdm
+except Exception:
+    tqdm = None
 
 if __package__ is None or __package__ == "":
     # Allow running as: python /path/to/classification/train.py
@@ -75,7 +79,19 @@ def autocast_context(use_amp: bool):
     return torch.cuda.amp.autocast(enabled=use_amp)
 
 
-def run_epoch(model, loader, criterion, device, optimizer=None, scaler=None, use_amp=False, log_interval=50):
+def run_epoch(
+    model,
+    loader,
+    criterion,
+    device,
+    optimizer=None,
+    scaler=None,
+    use_amp=False,
+    log_interval=50,
+    epoch=None,
+    total_epochs=None,
+    split_name="train",
+):
     is_train = optimizer is not None
     model.train() if is_train else model.eval()
 
@@ -83,7 +99,14 @@ def run_epoch(model, loader, criterion, device, optimizer=None, scaler=None, use
     total_correct = 0.0
     total_samples = 0
 
-    for batch_idx, (images, targets) in enumerate(loader, start=1):
+    use_tqdm = tqdm is not None and sys.stdout.isatty()
+    if use_tqdm:
+        desc = f"{split_name} {epoch}/{total_epochs}" if epoch is not None and total_epochs is not None else split_name
+        iterator = tqdm(loader, total=len(loader), desc=desc, leave=False, dynamic_ncols=True)
+    else:
+        iterator = loader
+
+    for batch_idx, (images, targets) in enumerate(iterator, start=1):
         images = images.to(device, non_blocking=True)
         labels = targets.float().unsqueeze(1).to(device, non_blocking=True)
 
@@ -105,7 +128,11 @@ def run_epoch(model, loader, criterion, device, optimizer=None, scaler=None, use
         total_loss += loss.item() * batch_size
         total_correct += compute_accuracy(logits.detach(), labels) * batch_size
 
-        if is_train and (batch_idx % log_interval == 0):
+        if use_tqdm:
+            running_loss = total_loss / max(1, total_samples)
+            running_acc = total_correct / max(1, total_samples)
+            iterator.set_postfix(loss=f"{running_loss:.4f}", acc=f"{running_acc:.4f}")
+        elif is_train and (batch_idx % log_interval == 0):
             print(
                 f"Batch {batch_idx}/{len(loader)} - "
                 f"Loss: {loss.item():.4f}"
@@ -215,6 +242,9 @@ def main():
             scaler=scaler,
             use_amp=use_amp,
             log_interval=args.log_interval,
+            epoch=epoch,
+            total_epochs=args.epochs,
+            split_name="train",
         )
         val_loss, val_acc = run_epoch(
             model=model,
@@ -225,6 +255,9 @@ def main():
             scaler=scaler,
             use_amp=use_amp,
             log_interval=args.log_interval,
+            epoch=epoch,
+            total_epochs=args.epochs,
+            split_name="val",
         )
 
         scheduler.step()
@@ -291,6 +324,7 @@ def main():
         scaler=scaler,
         use_amp=use_amp,
         log_interval=args.log_interval,
+        split_name="test",
     )
 
     print(f"Test loss: {test_loss:.4f}")

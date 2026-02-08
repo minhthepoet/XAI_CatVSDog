@@ -11,6 +11,25 @@ IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
 
 
+def _find_dataset_root(data_dir: str) -> str:
+    candidates = [
+        os.path.join(data_dir, "PetImages"),
+        data_dir,
+    ]
+    for root in candidates:
+        if os.path.isdir(os.path.join(root, "Cat")) and os.path.isdir(os.path.join(root, "Dog")):
+            return root
+    raise FileNotFoundError(
+        "Could not find dataset root containing both 'Cat/' and 'Dog/'. "
+        f"Checked: {candidates}"
+    )
+
+
+def _accept_any_file(_path: str) -> bool:
+    # Defer actual image validity checks to _filter_corrupted_samples.
+    return True
+
+
 def build_transforms(img_size: int) -> Tuple[transforms.Compose, transforms.Compose]:
     train_transform = transforms.Compose(
         [
@@ -72,10 +91,10 @@ def _apply_filtered_samples(dataset: datasets.ImageFolder, samples, targets):
 
 
 def build_dataloaders(args):
-    root = os.path.join(args.data_dir, "PetImages")
+    root = _find_dataset_root(args.data_dir)
     train_transform, eval_transform = build_transforms(args.img_size)
 
-    base_dataset = datasets.ImageFolder(root=root)
+    base_dataset = datasets.ImageFolder(root=root, is_valid_file=_accept_any_file)
     valid_samples, valid_targets = _filter_corrupted_samples(base_dataset)
 
     num_valid = len(valid_samples)
@@ -95,9 +114,15 @@ def build_dataloaders(args):
     val_indices = perm[test_size : test_size + val_size]
     train_indices = perm[test_size + val_size :]
 
-    train_dataset = datasets.ImageFolder(root=root, transform=train_transform)
-    val_dataset = datasets.ImageFolder(root=root, transform=eval_transform)
-    test_dataset = datasets.ImageFolder(root=root, transform=eval_transform)
+    train_dataset = datasets.ImageFolder(
+        root=root, transform=train_transform, is_valid_file=_accept_any_file
+    )
+    val_dataset = datasets.ImageFolder(
+        root=root, transform=eval_transform, is_valid_file=_accept_any_file
+    )
+    test_dataset = datasets.ImageFolder(
+        root=root, transform=eval_transform, is_valid_file=_accept_any_file
+    )
 
     _apply_filtered_samples(train_dataset, valid_samples, valid_targets)
     _apply_filtered_samples(val_dataset, valid_samples, valid_targets)

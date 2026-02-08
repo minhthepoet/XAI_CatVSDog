@@ -16,7 +16,6 @@ import sys
 
 import torch
 import torch.nn as nn
-from torch.cuda.amp import GradScaler, autocast
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 
@@ -54,6 +53,21 @@ def compute_accuracy(logits, labels):
     return (preds == labels).float().mean().item()
 
 
+def make_grad_scaler(use_amp: bool):
+    if hasattr(torch, "amp") and hasattr(torch.amp, "GradScaler"):
+        try:
+            return torch.amp.GradScaler("cuda", enabled=use_amp)
+        except TypeError:
+            return torch.amp.GradScaler(enabled=use_amp)
+    return torch.cuda.amp.GradScaler(enabled=use_amp)
+
+
+def autocast_context(use_amp: bool):
+    if hasattr(torch, "amp") and hasattr(torch.amp, "autocast"):
+        return torch.amp.autocast(device_type="cuda", enabled=use_amp)
+    return torch.cuda.amp.autocast(enabled=use_amp)
+
+
 def run_epoch(model, loader, criterion, device, optimizer=None, scaler=None, use_amp=False, log_interval=50):
     is_train = optimizer is not None
     model.train() if is_train else model.eval()
@@ -70,7 +84,7 @@ def run_epoch(model, loader, criterion, device, optimizer=None, scaler=None, use
             optimizer.zero_grad(set_to_none=True)
 
         with torch.set_grad_enabled(is_train):
-            with autocast(enabled=use_amp):
+            with autocast_context(use_amp):
                 logits = model(images)
                 loss = criterion(logits, labels)
 
@@ -117,9 +131,9 @@ def main():
     set_seed(args.seed)
 
     device = get_device()
-    print(f"[Device]: Device")
+    print(f"[Device]: {device}")
     use_amp = args.amp and device.type == "cuda"
-    scaler = GradScaler(enabled=use_amp)
+    scaler = make_grad_scaler(use_amp)
 
     train_loader, val_loader, test_loader, class_names = build_dataloaders(args)
     print(f"Class names: {class_names}")

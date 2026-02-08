@@ -40,11 +40,15 @@ def get_device():
 
 
 def set_backbone_trainable(model, trainable: bool):
-    for name, param in model.backbone.named_parameters():
-        if name.startswith("fc."):
+    if not hasattr(model, "backbone"):
+        raise AttributeError("Model does not have a 'backbone' attribute for freezing.")
+
+    for param in model.backbone.parameters():
+        param.requires_grad = trainable
+
+    if hasattr(model.backbone, "fc"):
+        for param in model.backbone.fc.parameters():
             param.requires_grad = True
-        else:
-            param.requires_grad = trainable
 
 
 def compute_accuracy(logits, labels):
@@ -126,6 +130,10 @@ def append_metrics(metrics_path, payload):
         f.write(json.dumps(payload) + "\n")
 
 
+def save_model_only(path, model):
+    torch.save(model.state_dict(), path)
+
+
 def main():
     args = get_args()
     set_seed(args.seed)
@@ -152,6 +160,19 @@ def main():
 
     latest_ckpt = os.path.join(run_dir, "checkpoint_latest.pt")
     best_ckpt = os.path.join(run_dir, "checkpoint_best.pt")
+    latest_model_only = os.path.join(run_dir, "model_only_latest.pth")
+    best_model_only = os.path.join(run_dir, "model_only_best.pth")
+    run_meta = os.path.join(run_dir, "run_meta.json")
+
+    with open(run_meta, "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "args": vars(args),
+                "class_names": class_names,
+            },
+            f,
+            indent=2,
+        )
 
     start_epoch = 1
     best_val_acc = 0.0
@@ -225,6 +246,7 @@ def main():
                 epoch=epoch,
                 best_val_acc=best_val_acc,
             )
+            save_model_only(best_model_only, model)
 
         save_checkpoint(
             latest_ckpt,
@@ -235,6 +257,7 @@ def main():
             epoch=epoch,
             best_val_acc=best_val_acc,
         )
+        save_model_only(latest_model_only, model)
 
         if epoch % args.saveEvery == 0:
             periodic_ckpt = os.path.join(run_dir, f"checkpoint_epoch_{epoch}.pt")

@@ -12,6 +12,7 @@ python -m classification.train \
 
 import json
 import os
+import sys
 
 import torch
 import torch.nn as nn
@@ -19,9 +20,16 @@ from torch.cuda.amp import GradScaler, autocast
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 
-from .config import get_args, set_seed
-from .data_preprocessing import build_dataloaders
-from .model import build_model
+if __package__ is None or __package__ == "":
+    # Allow running as: python /path/to/classification/train.py
+    sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from classification.config import get_args, set_seed
+    from classification.data_preprocessing import build_dataloaders
+    from classification.model import build_model
+else:
+    from .config import get_args, set_seed
+    from .data_preprocessing import build_dataloaders
+    from .model import build_model
 
 
 def get_device():

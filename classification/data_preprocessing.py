@@ -59,7 +59,9 @@ def _filter_corrupted_samples(dataset: datasets.ImageFolder):
     valid_targets = []
 
     skipped = 0
-    for path, target in dataset.samples:
+    print(f"Starting corrupted-image scan for {total_images} files...", flush=True)
+    progress_every = 2000
+    for idx, (path, target) in enumerate(dataset.samples, start=1):
         try:
             with Image.open(path) as img:
                 img.convert("RGB")
@@ -67,6 +69,12 @@ def _filter_corrupted_samples(dataset: datasets.ImageFolder):
             valid_targets.append(target)
         except Exception:
             skipped += 1
+
+        if idx % progress_every == 0 or idx == total_images:
+            print(
+                f"Scanned {idx}/{total_images} | valid={len(valid_samples)} | skipped={skipped}",
+                flush=True,
+            )
 
     dataset.samples = valid_samples
     dataset.imgs = valid_samples
@@ -92,6 +100,7 @@ def _apply_filtered_samples(dataset: datasets.ImageFolder, samples, targets):
 
 def build_dataloaders(args):
     root = _find_dataset_root(args.data_dir)
+    print(f"Dataset root: {root}", flush=True)
     train_transform, eval_transform = build_transforms(args.img_size)
 
     base_dataset = datasets.ImageFolder(root=root, is_valid_file=_accept_any_file)
@@ -113,6 +122,10 @@ def build_dataloaders(args):
     test_indices = perm[:test_size]
     val_indices = perm[test_size : test_size + val_size]
     train_indices = perm[test_size + val_size :]
+    print(
+        f"Split sizes | train={len(train_indices)} val={len(val_indices)} test={len(test_indices)}",
+        flush=True,
+    )
 
     train_dataset = datasets.ImageFolder(
         root=root, transform=train_transform, is_valid_file=_accept_any_file

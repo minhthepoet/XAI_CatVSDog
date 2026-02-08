@@ -141,11 +141,18 @@ def main():
     device = get_device()
     use_amp = args.amp and device.type == "cuda"
     print(f"[Device]: {device}")
+    print(f"[AMP enabled]: {use_amp}", flush=True)
     scaler = make_grad_scaler(use_amp)
 
+    print("Building dataloaders...", flush=True)
     train_loader, val_loader, test_loader, class_names = build_dataloaders(args)
-    print(f"Class names: {class_names}")
+    print(f"Class names: {class_names}", flush=True)
+    print(
+        f"Num batches | train={len(train_loader)} val={len(val_loader)} test={len(test_loader)}",
+        flush=True,
+    )
 
+    print("Building model...", flush=True)
     model = build_model(args).to(device)
     criterion = nn.BCEWithLogitsLoss()
     optimizer = AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
@@ -189,6 +196,7 @@ def main():
         print(f"Resumed from {args.resume} at epoch {start_epoch}")
 
     for epoch in range(start_epoch, args.epochs + 1):
+        print(f"Starting epoch {epoch}/{args.epochs}", flush=True)
         if args.freeze_backbone_epochs > 0:
             if epoch <= args.freeze_backbone_epochs:
                 set_backbone_trainable(model, trainable=False)

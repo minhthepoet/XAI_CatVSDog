@@ -139,8 +139,8 @@ def main():
     set_seed(args.seed)
 
     device = get_device()
-    print(f"[Device]: {device}")
     use_amp = args.amp and device.type == "cuda"
+    print(f"[Device]: {device}")
     scaler = make_grad_scaler(use_amp)
 
     train_loader, val_loader, test_loader, class_names = build_dataloaders(args)

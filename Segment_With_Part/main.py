@@ -517,16 +517,16 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Dog/Cat part bounding box extraction (no segmentation).")
     parser.add_argument("--image", required=True, type=str, help="Input image path")
     parser.add_argument("--output_dir", default=".", type=str, help="Base output directory")
-    parser.add_argument("--device", default="mps", choices=["cuda", "cpu", "mps"], help="Inference device")
+    parser.add_argument("--device", default="cuda", choices=["cuda", "cpu", "mps"], help="Inference device")
 
     parser.add_argument("--dino_config", required=True, type=str, help="GroundingDINO config path")
     parser.add_argument("--dino_checkpoint", required=True, type=str, help="GroundingDINO checkpoint path")
 
-    parser.add_argument("--box_threshold", default=0.2, type=float)
-    parser.add_argument("--text_threshold", default=0.2, type=float)
-    parser.add_argument("--topk", default=6, type=int)
-    parser.add_argument("--nms_iou", default=0.5, type=float)
-    parser.add_argument("--box_expand", default=0.18, type=float, help="Expand each part box by ratio")
+    parser.add_argument("--box_threshold", default=0.16, type=float)
+    parser.add_argument("--text_threshold", default=0.16, type=float)
+    parser.add_argument("--topk", default=10, type=int)
+    parser.add_argument("--nms_iou", default=0.55, type=float)
+    parser.add_argument("--box_expand", default=0.2, type=float, help="Expand each part box by ratio")
 
     args = parser.parse_args()
     args.device = ensure_device(args.device)

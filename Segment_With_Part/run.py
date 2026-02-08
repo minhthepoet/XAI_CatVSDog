@@ -75,7 +75,22 @@ def collect_dataset_images(data_dir: Path, exts: Sequence[str]) -> List[Path]:
     allowed = {f".{e.lower().lstrip('.')}" for e in exts}
     images: List[Path] = []
 
-    # New layout (preferred): data/train/{cats,dogs} and data/test/{cats,dogs}
+    # Layout A: data_dir/cats and data_dir/dogs (new data_test layout)
+    if (data_dir / "cats").exists() and (data_dir / "dogs").exists():
+        images.extend(_collect_class_images(data_dir, ("cats", "dogs"), allowed))
+        images.sort(key=lambda x: str(x).lower())
+        print(f"Dataset layout: direct classes under {data_dir}", flush=True)
+        return images
+
+    # Layout B: data_dir/data_test/cats and data_dir/data_test/dogs
+    data_test = data_dir / "data_test"
+    if (data_test / "cats").exists() and (data_test / "dogs").exists():
+        images.extend(_collect_class_images(data_test, ("cats", "dogs"), allowed))
+        images.sort(key=lambda x: str(x).lower())
+        print(f"Dataset layout: data_test classes under {data_test}", flush=True)
+        return images
+
+    # Layout C: data/train/{cats,dogs} and optional data/test/{cats,dogs}
     new_train = data_dir / "data" / "train"
     new_test = data_dir / "data" / "test"
     if (new_train / "cats").exists() and (new_train / "dogs").exists():
@@ -83,22 +98,25 @@ def collect_dataset_images(data_dir: Path, exts: Sequence[str]) -> List[Path]:
         if (new_test / "cats").exists() and (new_test / "dogs").exists():
             images.extend(_collect_class_images(new_test, ("cats", "dogs"), allowed))
         images.sort(key=lambda x: str(x).lower())
+        print(f"Dataset layout: train/test classes under {data_dir / 'data'}", flush=True)
         return images
 
-    # Backward-compatible fallback: PetImages/{Cat,Dog}
+    # Layout D: PetImages/{Cat,Dog}
     pet_root = data_dir / "PetImages"
     if (pet_root / "Cat").exists() and (pet_root / "Dog").exists():
         images.extend(_collect_class_images(pet_root, ("Cat", "Dog"), allowed))
         images.sort(key=lambda x: str(x).lower())
+        print(f"Dataset layout: PetImages under {pet_root}", flush=True)
         return images
 
     raise FileNotFoundError(
         "Could not find dataset class folders.\n"
         "Expected one of:\n"
+        f"- {data_dir} with cats/ and dogs/\n"
+        f"- {data_dir / 'data_test'} with cats/ and dogs/\n"
         f"- {data_dir / 'data' / 'train'} with cats/ and dogs/\n"
         f"- {data_dir / 'PetImages'} with Cat/ and Dog/"
     )
-
 
 def slice_images(images: List[Path], start_idx: int, end_idx: int) -> List[Path]:
     if not images:

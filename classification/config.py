@@ -25,6 +25,11 @@ def get_args():
     parser.add_argument("--log_interval", type=int, required=True)
     parser.add_argument("--freeze_backbone_epochs", type=int, default=0)
     parser.add_argument("--saveEvery", type=int, default=10)
+    parser.add_argument(
+        "--scan_corrupted",
+        action="store_true",
+        help="Enable slow pre-scan that opens every image to drop corrupted files.",
+    )
 
     args = parser.parse_args()
 

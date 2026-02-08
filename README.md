@@ -41,11 +41,26 @@ This assumption naturally holds for CNNs (e.g., ResNet) and motivates the archit
 ### 1. Dataset
 - Input: raw RGB images
 - Categories:
-  - `dog`
-  - `cat`
+  - `dogs`
+  - `cats`
 - Example datasets:
   - Kaggle Dogs vs Cats
   - Oxford-IIIT Pet
+
+Current expected layout (ImageFolder-style):
+
+```text
+<data_dir>/
+  data/
+    train/
+      cats/*.jpg|*.jpeg
+      dogs/*.jpg|*.jpeg
+    test/
+      cats/*.jpg|*.jpeg
+      dogs/*.jpg|*.jpeg
+```
+
+Labels are inferred from folder names only. No extra annotation files are required.
 
 No part annotations or segmentation masks are required.
 

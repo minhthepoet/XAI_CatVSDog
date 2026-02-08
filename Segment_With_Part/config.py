@@ -15,7 +15,12 @@ def get_args() -> argparse.Namespace:
     parser.add_argument("--dino_checkpoint", required=True, type=str)
 
     # Optional runtime params (mandatory defaults)
-    parser.add_argument("--device", default="cuda", choices=["cuda", "cpu"])
+    parser.add_argument(
+        "--device",
+        default="cuda",
+        choices=["cuda", "cpu", "mps"],
+        help="Inference device (cuda/cpu/mps).",
+    )
     parser.add_argument("--box_threshold", default=0.16, type=float)
     parser.add_argument("--text_threshold", default=0.16, type=float)
     parser.add_argument("--topk", default=10, type=int)

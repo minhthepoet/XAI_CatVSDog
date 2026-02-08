@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
+import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -65,7 +67,7 @@ PART_TAXONOMY: Dict[str, List[PartSpec]] = {
         PartSpec("right_ear", ["dog right ear", "right ear of the dog"]),
         PartSpec(
             "body",
-            ["dog body", "dog torso", "body of the dog"],
+            ["dog torso", "torso of the dog", "dog body"],
             size_prior=SizePrior(min_area_ratio=0.08, max_area_ratio=0.98),
             aspect_prior=AspectPrior(min_ar=0.35, max_ar=5.0),
         ),
@@ -85,7 +87,7 @@ PART_TAXONOMY: Dict[str, List[PartSpec]] = {
         PartSpec("right_ear", ["cat right ear"]),
         PartSpec(
             "body",
-            ["cat body", "cat torso", "body of the cat"],
+            ["cat torso", "torso of the cat", "cat body"],
             size_prior=SizePrior(min_area_ratio=0.08, max_area_ratio=0.98),
             aspect_prior=AspectPrior(min_ar=0.35, max_ar=5.0),
         ),
@@ -160,6 +162,58 @@ def nms_candidates(cands: List[CandidateBox], iou_thr: float) -> List[CandidateB
     return kept
 
 
+def expand_ratio_for_part(part_name: str, default_expand: float) -> float:
+    # Body box is usually large already, so keep expansion conservative.
+    if part_name == "body":
+        return min(default_expand, 0.06)
+    return default_expand
+
+
+def torso_fallback_from_object(object_bbox: Sequence[float], w: int, h: int) -> List[float]:
+    x1, y1, x2, y2 = object_bbox
+    ow = max(1.0, x2 - x1)
+    oh = max(1.0, y2 - y1)
+    torso = [
+        x1 + 0.06 * ow,
+        y1 + 0.28 * oh,
+        x2 - 0.06 * ow,
+        y2 - 0.04 * oh,
+    ]
+    return clamp_box(torso, w, h)
+
+
+def is_plausible_eye_ear_box(part_name: str, box: Sequence[float], object_bbox: Sequence[float]) -> bool:
+    obj_w = max(1.0, object_bbox[2] - object_bbox[0])
+    obj_h = max(1.0, object_bbox[3] - object_bbox[1])
+    obj_area = max(1e-6, box_area(object_bbox))
+    bw = max(1.0, box[2] - box[0])
+    bh = max(1.0, box[3] - box[1])
+    area_ratio = box_area(box) / obj_area
+    rel_cy = ((box[1] + box[3]) * 0.5 - object_bbox[1]) / obj_h
+    rel_bw = bw / obj_w
+    rel_bh = bh / obj_h
+
+    if part_name in {"eye", "left_eye", "right_eye"}:
+        if area_ratio < 0.0005 or area_ratio > 0.14:
+            return False
+        if rel_cy < -0.02 or rel_cy > 0.72:
+            return False
+        if rel_bw > 0.52 or rel_bh > 0.42:
+            return False
+        return True
+
+    if part_name in {"ear", "left_ear", "right_ear"}:
+        if area_ratio < 0.001 or area_ratio > 0.24:
+            return False
+        if rel_cy < -0.08 or rel_cy > 0.68:
+            return False
+        if rel_bw > 0.66 or rel_bh > 0.62:
+            return False
+        return True
+
+    return True
+
+
 def ensure_device(device: str) -> str:
     if device == "cuda" and not torch.cuda.is_available():
         return "cpu"
@@ -169,6 +223,42 @@ def ensure_device(device: str) -> str:
         if not torch.backends.mps.is_available():
             return "cpu"
     return device
+
+
+def resolve_groundingdino_api(config_path: str):
+    candidates = [
+        "groundingdino.util.inference",
+        "GroundingDINO.groundingdino.util.inference",
+    ]
+
+    repo_root = Path(config_path).resolve().parents[2]
+    source_candidates = [
+        repo_root / "groundingdino",
+        repo_root / "GroundingDINO",
+        repo_root / "Segment_With_Part" / "groundingdino",
+        repo_root / "Segment_With_Part" / "GroundingDINO",
+    ]
+    for src in source_candidates:
+        if src.exists():
+            src_str = str(src)
+            if src_str not in sys.path:
+                sys.path.insert(0, src_str)
+
+    import_errors: List[str] = []
+    for module_name in candidates:
+        try:
+            module = importlib.import_module(module_name)
+            return module.load_image, module.load_model, module.predict
+        except Exception as exc:  # pragma: no cover
+            import_errors.append(f"- {module_name}: {type(exc).__name__}: {exc}")
+
+    detail = "\n".join(import_errors) if import_errors else "- no import attempts recorded"
+    raise RuntimeError(
+        "GroundingDINO import failed. Install official package or clone source.\n"
+        "Suggested install: python -m pip install --no-build-isolation git+https://github.com/IDEA-Research/GroundingDINO.git\n"
+        "Tried imports:\n"
+        f"{detail}"
+    )
 
 
 class GroundingDinoEngine:
@@ -187,11 +277,16 @@ class GroundingDinoEngine:
         if not Path(self.checkpoint_path).exists():
             raise FileNotFoundError(f"GroundingDINO checkpoint not found: {self.checkpoint_path}")
 
-        from groundingdino.util.inference import load_image, load_model, predict
+        load_image, load_model, predict = resolve_groundingdino_api(self.config_path)
 
         self._load_image = load_image
         self._predict = predict
-        self._model = load_model(self.config_path, self.checkpoint_path, device=self.device)
+        try:
+            self._model = load_model(self.config_path, self.checkpoint_path, device=self.device)
+        except TypeError:
+            self._model = load_model(self.config_path, self.checkpoint_path)
+            if hasattr(self._model, "to"):
+                self._model = self._model.to(self.device)
 
     def predict(
         self,
@@ -202,14 +297,23 @@ class GroundingDinoEngine:
         text_threshold: float,
     ) -> Tuple[np.ndarray, np.ndarray]:
         _src, image = self._load_image(image_path)
-        boxes, logits, _phrases = self._predict(
-            model=self._model,
-            image=image,
-            caption=phrase,
-            box_threshold=box_threshold,
-            text_threshold=text_threshold,
-            device=self.device,
-        )
+        try:
+            boxes, logits, _phrases = self._predict(
+                model=self._model,
+                image=image,
+                caption=phrase,
+                box_threshold=box_threshold,
+                text_threshold=text_threshold,
+                device=self.device,
+            )
+        except TypeError:
+            boxes, logits, _phrases = self._predict(
+                model=self._model,
+                image=image,
+                caption=phrase,
+                box_threshold=box_threshold,
+                text_threshold=text_threshold,
+            )
         if isinstance(boxes, torch.Tensor):
             boxes = boxes.detach().cpu().numpy()
         if isinstance(logits, torch.Tensor):
@@ -286,6 +390,8 @@ def run_part_box_pipeline(
                 b = clamp_box(boxes[i].tolist(), w, h)
                 if not aspect_ratio_ok(b, spec.aspect_prior):
                     continue
+                if not is_plausible_eye_ear_box(spec.part_name, b, object_bbox):
+                    continue
                 area_ratio = box_area(b) / image_area
                 loc_penalty = max(0.0, 1.0 - box_iou(b, object_bbox))
                 cx = (b[0] + b[2]) * 0.5
@@ -357,7 +463,7 @@ def run_part_box_pipeline(
                 part_name=pname,
                 prompt_used=cand.phrase,
                 box_xyxy=cand.box_xyxy,
-                box_xyxy_expanded=expand_box(cand.box_xyxy, w, h, box_expand),
+                box_xyxy_expanded=expand_box(cand.box_xyxy, w, h, expand_ratio_for_part(pname, box_expand)),
                 box_score=cand.final_score,
             )
         )
@@ -368,8 +474,84 @@ def run_part_box_pipeline(
             continue
 
         part_candidates = collect_candidates(spec, spec.prompt_phrases, box_threshold, text_threshold)
+        used_body_fallback = False
+        if spec.part_name == "body":
+            obj_area = max(1e-6, box_area(object_bbox))
+            obj_h = max(1.0, object_bbox[3] - object_bbox[1])
+            filtered_body: List[CandidateBox] = []
+            for cand in part_candidates:
+                iou_obj = box_iou(cand.box_xyxy, object_bbox)
+                area_vs_obj = box_area(cand.box_xyxy) / obj_area
+                cy = 0.5 * (cand.box_xyxy[1] + cand.box_xyxy[3])
+                if iou_obj < 0.45:
+                    continue
+                # Reject tiny crops and full-silhouette boxes; keep torso-ish regions.
+                if area_vs_obj < 0.18 or area_vs_obj > 0.93:
+                    continue
+                if cy < object_bbox[1] + 0.35 * obj_h:
+                    continue
+                cand.final_score += 0.35 * iou_obj - 0.6 * abs(area_vs_obj - 0.55)
+                filtered_body.append(cand)
+            if filtered_body:
+                part_candidates = filtered_body
+            else:
+                part_candidates = [
+                    CandidateBox(
+                        box_xyxy=torso_fallback_from_object(object_bbox, w, h),
+                        score=0.0,
+                        phrase="torso_fallback_from_object_bbox",
+                        part_name="body",
+                        final_score=0.0,
+                    )
+                ]
+                used_body_fallback = True
+        elif spec.part_name == "tail":
+            obj_area = max(1e-6, box_area(object_bbox))
+            ow = max(1.0, object_bbox[2] - object_bbox[0])
+            oh = max(1.0, object_bbox[3] - object_bbox[1])
+            edge_margin_x = 0.18 * ow
+            edge_margin_y = 0.18 * oh
+
+            body_box: Optional[List[float]] = None
+            for p in selected_parts:
+                if p.part_name == "body":
+                    body_box = p.box_xyxy
+                    break
+
+            filtered_tail: List[CandidateBox] = []
+            for cand in part_candidates:
+                iou_obj = box_iou(cand.box_xyxy, object_bbox)
+                area_vs_obj = box_area(cand.box_xyxy) / obj_area
+                cx = 0.5 * (cand.box_xyxy[0] + cand.box_xyxy[2])
+                cy = 0.5 * (cand.box_xyxy[1] + cand.box_xyxy[3])
+                near_edge = (
+                    cx <= object_bbox[0] + edge_margin_x
+                    or cx >= object_bbox[2] - edge_margin_x
+                    or cy <= object_bbox[1] + edge_margin_y
+                    or cy >= object_bbox[3] - edge_margin_y
+                )
+                if not near_edge:
+                    continue
+                if iou_obj < 0.01 or iou_obj > 0.60:
+                    continue
+                if area_vs_obj < 0.002 or area_vs_obj > 0.16:
+                    continue
+                if cand.final_score < max(0.10, box_threshold * 0.65):
+                    continue
+                if body_box is not None and box_iou(cand.box_xyxy, body_box) > 0.45:
+                    continue
+                filtered_tail.append(cand)
+
+            if filtered_tail:
+                part_candidates = filtered_tail
+            else:
+                part_candidates = []
+
         if not part_candidates:
-            dropped.append({"part_name": spec.part_name, "reason": "no_box_found"})
+            if spec.part_name == "tail":
+                dropped.append({"part_name": "tail", "reason": "likely_not_visible_or_not_confident"})
+            else:
+                dropped.append({"part_name": spec.part_name, "reason": "no_box_found"})
             continue
 
         kept_for_part = nms_candidates(part_candidates, nms_iou)
@@ -389,10 +571,12 @@ def run_part_box_pipeline(
                 part_name=spec.part_name,
                 prompt_used=best.phrase,
                 box_xyxy=best.box_xyxy,
-                box_xyxy_expanded=expand_box(best.box_xyxy, w, h, box_expand),
+                box_xyxy_expanded=expand_box(best.box_xyxy, w, h, expand_ratio_for_part(spec.part_name, box_expand)),
                 box_score=best.final_score,
             )
         )
+        if used_body_fallback:
+            dropped.append({"part_name": "body", "reason": "used_torso_fallback"})
 
     # Leg stage: detect any visible legs, label leg_1..leg_N (N<=4) left->right.
     leg_proxy = PartSpec(
@@ -445,7 +629,7 @@ def run_part_box_pipeline(
                 part_name=label,
                 prompt_used=cand.phrase,
                 box_xyxy=cand.box_xyxy,
-                box_xyxy_expanded=expand_box(cand.box_xyxy, w, h, box_expand),
+                box_xyxy_expanded=expand_box(cand.box_xyxy, w, h, expand_ratio_for_part(label, box_expand)),
                 box_score=cand.final_score,
             )
         )
@@ -471,7 +655,7 @@ def run_part_box_pipeline(
                             part_name=miss,
                             prompt_used=cand.phrase,
                             box_xyxy=cand.box_xyxy,
-                            box_xyxy_expanded=expand_box(cand.box_xyxy, w, h, box_expand),
+                            box_xyxy_expanded=expand_box(cand.box_xyxy, w, h, expand_ratio_for_part(miss, box_expand)),
                             box_score=cand.final_score,
                         )
                     )

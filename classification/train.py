@@ -8,6 +8,9 @@ python -m classification.train \
   --save_dir ./runs \
   --run_name resnet18_pretrained \
   --saveEvery 10
+
+Expected data layout:
+<data_dir>/data/train/{cats,dogs} and <data_dir>/data/test/{cats,dogs}
 """
 
 import json

@@ -37,6 +37,18 @@ from main import (
 )
 
 
+def _collect_class_images(root: Path, class_names: Sequence[str], allowed: set[str]) -> List[Path]:
+    images: List[Path] = []
+    for cls_name in class_names:
+        cls_dir = root / cls_name
+        if not cls_dir.exists():
+            continue
+        for p in sorted(cls_dir.rglob("*")):
+            if p.is_file() and p.suffix.lower() in allowed:
+                images.append(p)
+    return images
+
+
 def resolve_path(path_str: str, repo_root: Path) -> Path:
     p = Path(path_str).expanduser()
     if p.is_absolute():
@@ -55,23 +67,32 @@ def resolve_path(path_str: str, repo_root: Path) -> Path:
 
 
 def collect_dataset_images(data_dir: Path, exts: Sequence[str]) -> List[Path]:
-    pet_root = data_dir / "PetImages"
-    if not pet_root.exists():
-        raise FileNotFoundError(f"Expected dataset root not found: {pet_root}")
-
     allowed = {f".{e.lower().lstrip('.')}" for e in exts}
     images: List[Path] = []
 
-    for cls_name in ("Cat", "Dog"):
-        cls_dir = pet_root / cls_name
-        if not cls_dir.exists():
-            continue
-        for p in sorted(cls_dir.rglob("*")):
-            if p.is_file() and p.suffix.lower() in allowed:
-                images.append(p)
+    # New layout (preferred): data/train/{cats,dogs} and data/test/{cats,dogs}
+    new_train = data_dir / "data" / "train"
+    new_test = data_dir / "data" / "test"
+    if (new_train / "cats").exists() and (new_train / "dogs").exists():
+        images.extend(_collect_class_images(new_train, ("cats", "dogs"), allowed))
+        if (new_test / "cats").exists() and (new_test / "dogs").exists():
+            images.extend(_collect_class_images(new_test, ("cats", "dogs"), allowed))
+        images.sort(key=lambda x: str(x).lower())
+        return images
 
-    images.sort(key=lambda x: str(x).lower())
-    return images
+    # Backward-compatible fallback: PetImages/{Cat,Dog}
+    pet_root = data_dir / "PetImages"
+    if (pet_root / "Cat").exists() and (pet_root / "Dog").exists():
+        images.extend(_collect_class_images(pet_root, ("Cat", "Dog"), allowed))
+        images.sort(key=lambda x: str(x).lower())
+        return images
+
+    raise FileNotFoundError(
+        "Could not find dataset class folders.\n"
+        "Expected one of:\n"
+        f"- {data_dir / 'data' / 'train'} with cats/ and dogs/\n"
+        f"- {data_dir / 'PetImages'} with Cat/ and Dog/"
+    )
 
 
 def slice_images(images: List[Path], start_idx: int, end_idx: int) -> List[Path]:
@@ -120,6 +141,7 @@ def main() -> None:
 
     all_images = collect_dataset_images(data_dir, args.exts)
     run_images = slice_images(all_images, args.start_idx, args.end_idx)
+    print(f"Dataset images discovered: {len(all_images)} from {data_dir}", flush=True)
 
     summary = {
         "total_images_found": len(all_images),

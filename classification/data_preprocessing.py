@@ -1,5 +1,5 @@
 import os
-from typing import Tuple
+from typing import List, Optional, Tuple
 
 from PIL import Image
 import torch
@@ -11,23 +11,39 @@ IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
 
 
-def _find_dataset_root(data_dir: str) -> str:
-    candidates = [
+def _has_class_dirs(root: str, class_names: List[str]) -> bool:
+    return all(os.path.isdir(os.path.join(root, cls)) for cls in class_names)
+
+def _resolve_data_roots(data_dir: str) -> Tuple[str, Optional[str]]:
+    new_train = os.path.join(data_dir, "data", "train")
+    new_test = os.path.join(data_dir, "data", "test")
+    if _has_class_dirs(new_train, ["cats", "dogs"]):
+        if not _has_class_dirs(new_test, ["cats", "dogs"]):
+            raise FileNotFoundError(
+                "Found new train layout at data/train but missing data/test with both cats/ and dogs/."
+            )
+        return new_train, new_test
+
+    # Backward-compatible fallback.
+    legacy_candidates = [
         os.path.join(data_dir, "PetImages"),
         data_dir,
     ]
-    for root in candidates:
-        if os.path.isdir(os.path.join(root, "Cat")) and os.path.isdir(os.path.join(root, "Dog")):
-            return root
+    for root in legacy_candidates:
+        if _has_class_dirs(root, ["Cat", "Dog"]) or _has_class_dirs(root, ["cat", "dog"]):
+            return root, None
+
     raise FileNotFoundError(
-        "Could not find dataset root containing both 'Cat/' and 'Dog/'. "
-        f"Checked: {candidates}"
+        "Could not resolve dataset layout. Expected either:\n"
+        "1) data/train/{cats,dogs} and data/test/{cats,dogs}\n"
+        "2) legacy PetImages/{Cat,Dog}\n"
+        f"Base path checked: {data_dir}"
     )
 
 
-def _accept_any_file(_path: str) -> bool:
-    # Defer actual image validity checks to _filter_corrupted_samples.
-    return True
+def _accept_jpeg_file(path: str) -> bool:
+    lower = path.lower()
+    return lower.endswith(".jpg") or lower.endswith(".jpeg")
 
 
 def build_transforms(img_size: int) -> Tuple[transforms.Compose, transforms.Compose]:
@@ -53,13 +69,13 @@ def build_transforms(img_size: int) -> Tuple[transforms.Compose, transforms.Comp
     return train_transform, eval_transform
 
 
-def _filter_corrupted_samples(dataset: datasets.ImageFolder):
+def _filter_corrupted_samples(dataset: datasets.ImageFolder, split_name: str):
     total_images = len(dataset.samples)
     valid_samples = []
     valid_targets = []
 
     skipped = 0
-    print(f"Starting corrupted-image scan for {total_images} files...", flush=True)
+    print(f"[{split_name}] Starting corrupted-image scan for {total_images} files...", flush=True)
     progress_every = 2000
     for idx, (path, target) in enumerate(dataset.samples, start=1):
         try:
@@ -72,7 +88,7 @@ def _filter_corrupted_samples(dataset: datasets.ImageFolder):
 
         if idx % progress_every == 0 or idx == total_images:
             print(
-                f"Scanned {idx}/{total_images} | valid={len(valid_samples)} | skipped={skipped}",
+                f"[{split_name}] Scanned {idx}/{total_images} | valid={len(valid_samples)} | skipped={skipped}",
                 flush=True,
             )
 
@@ -80,16 +96,28 @@ def _filter_corrupted_samples(dataset: datasets.ImageFolder):
     dataset.imgs = valid_samples
     dataset.targets = valid_targets
 
-    cat_count = sum(t == 0 for t in valid_targets)
-    dog_count = sum(t == 1 for t in valid_targets)
+    counts_by_class = {name: 0 for name in dataset.classes}
+    for t in valid_targets:
+        if 0 <= t < len(dataset.classes):
+            counts_by_class[dataset.classes[t]] += 1
 
-    print(f"Total images: {total_images}")
-    print(f"Valid images: {len(valid_samples)}")
-    print(f"Skipped (corrupted) images: {skipped}")
-    print(f"Valid Cat count: {cat_count}")
-    print(f"Valid Dog count: {dog_count}")
+    print(f"[{split_name}] Total images: {total_images}")
+    print(f"[{split_name}] Valid images: {len(valid_samples)}")
+    print(f"[{split_name}] Skipped (corrupted): {skipped}")
+    for class_name in dataset.classes:
+        print(f"[{split_name}] Valid {class_name}: {counts_by_class[class_name]}")
 
     return valid_samples, valid_targets
+
+
+def _collect_samples(dataset: datasets.ImageFolder, split_name: str, scan_corrupted: bool):
+    if scan_corrupted:
+        return _filter_corrupted_samples(dataset, split_name=split_name)
+
+    # Fast path: trust directory contents and skip costly open/verify loop.
+    total = len(dataset.samples)
+    print(f"[{split_name}] Fast mode: skipping corrupted-image scan. Using {total} JPEG files as-is.", flush=True)
+    return list(dataset.samples), list(dataset.targets)
 
 
 def _apply_filtered_samples(dataset: datasets.ImageFolder, samples, targets):
@@ -99,51 +127,89 @@ def _apply_filtered_samples(dataset: datasets.ImageFolder, samples, targets):
 
 
 def build_dataloaders(args):
-    root = _find_dataset_root(args.data_dir)
-    print(f"Dataset root: {root}", flush=True)
+    train_root, test_root = _resolve_data_roots(args.data_dir)
+    print(f"Train root: {train_root}", flush=True)
+    if test_root is not None:
+        print(f"Test root: {test_root}", flush=True)
+    else:
+        print("Test root: <none> (using random split from train root)", flush=True)
+
     train_transform, eval_transform = build_transforms(args.img_size)
 
-    base_dataset = datasets.ImageFolder(root=root, is_valid_file=_accept_any_file)
-    valid_samples, valid_targets = _filter_corrupted_samples(base_dataset)
+    base_train_dataset = datasets.ImageFolder(root=train_root, is_valid_file=_accept_jpeg_file)
+    train_valid_samples, train_valid_targets = _collect_samples(
+        base_train_dataset,
+        split_name="train",
+        scan_corrupted=getattr(args, "scan_corrupted", False),
+    )
 
-    num_valid = len(valid_samples)
-    if num_valid == 0:
-        raise RuntimeError("No valid images were found after filtering corrupted files.")
+    num_train_valid = len(train_valid_samples)
+    if num_train_valid == 0:
+        raise RuntimeError("No valid training images were found after filtering corrupted files.")
 
-    test_size = int(num_valid * args.test_split)
-    val_size = int(num_valid * args.val_split)
-    train_size = num_valid - val_size - test_size
+    val_size = int(num_train_valid * args.val_split)
+    train_size = num_train_valid - val_size
     if train_size <= 0:
-        raise ValueError("Split sizes leave no samples for training. Adjust val/test split.")
+        raise ValueError("val_split leaves no samples for training. Adjust --val_split.")
 
     generator = torch.Generator().manual_seed(args.seed)
-    perm = torch.randperm(num_valid, generator=generator).tolist()
-
-    test_indices = perm[:test_size]
-    val_indices = perm[test_size : test_size + val_size]
-    train_indices = perm[test_size + val_size :]
-    print(
-        f"Split sizes | train={len(train_indices)} val={len(val_indices)} test={len(test_indices)}",
-        flush=True,
-    )
+    perm = torch.randperm(num_train_valid, generator=generator).tolist()
+    val_indices = perm[:val_size]
+    train_indices = perm[val_size:]
 
     train_dataset = datasets.ImageFolder(
-        root=root, transform=train_transform, is_valid_file=_accept_any_file
+        root=train_root, transform=train_transform, is_valid_file=_accept_jpeg_file
     )
     val_dataset = datasets.ImageFolder(
-        root=root, transform=eval_transform, is_valid_file=_accept_any_file
-    )
-    test_dataset = datasets.ImageFolder(
-        root=root, transform=eval_transform, is_valid_file=_accept_any_file
+        root=train_root, transform=eval_transform, is_valid_file=_accept_jpeg_file
     )
 
-    _apply_filtered_samples(train_dataset, valid_samples, valid_targets)
-    _apply_filtered_samples(val_dataset, valid_samples, valid_targets)
-    _apply_filtered_samples(test_dataset, valid_samples, valid_targets)
+    _apply_filtered_samples(train_dataset, train_valid_samples, train_valid_targets)
+    _apply_filtered_samples(val_dataset, train_valid_samples, train_valid_targets)
 
     train_subset = Subset(train_dataset, train_indices)
     val_subset = Subset(val_dataset, val_indices)
-    test_subset = Subset(test_dataset, test_indices)
+
+    if test_root is not None:
+        test_dataset = datasets.ImageFolder(
+            root=test_root, transform=eval_transform, is_valid_file=_accept_jpeg_file
+        )
+        test_valid_samples, test_valid_targets = _collect_samples(
+            test_dataset,
+            split_name="test",
+            scan_corrupted=getattr(args, "scan_corrupted", False),
+        )
+        if test_dataset.classes != train_dataset.classes:
+            raise RuntimeError(
+                "Train/Test class mismatch.\n"
+                f"train classes={train_dataset.classes}\n"
+                f"test classes={test_dataset.classes}"
+            )
+        _apply_filtered_samples(test_dataset, test_valid_samples, test_valid_targets)
+        test_subset = Subset(test_dataset, list(range(len(test_valid_samples))))
+        if args.test_split > 0:
+            print("[Info] Ignoring --test_split because explicit data/test split is available.", flush=True)
+    else:
+        test_size = int(num_train_valid * args.test_split)
+        test_indices = perm[:test_size]
+        # Remove test indices from train/val if we're in legacy random-split mode.
+        val_indices = perm[test_size : test_size + val_size]
+        train_indices = perm[test_size + val_size :]
+        if len(train_indices) == 0:
+            raise ValueError("Split sizes leave no samples for training. Adjust val/test split.")
+        train_subset = Subset(train_dataset, train_indices)
+        val_subset = Subset(val_dataset, val_indices)
+
+        test_dataset = datasets.ImageFolder(
+            root=train_root, transform=eval_transform, is_valid_file=_accept_jpeg_file
+        )
+        _apply_filtered_samples(test_dataset, train_valid_samples, train_valid_targets)
+        test_subset = Subset(test_dataset, test_indices)
+
+    print(
+        f"Split sizes | train={len(train_subset)} val={len(val_subset)} test={len(test_subset)}",
+        flush=True,
+    )
 
     pin_memory = torch.cuda.is_available()
 

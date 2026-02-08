@@ -107,6 +107,12 @@ def main():
     parser = argparse.ArgumentParser(description="Build raw_data_explain from part-detection JSON files.")
     parser.add_argument("--data_dir", required=True, help="Directory containing cats/ and dogs/ JSON files.")
     parser.add_argument("--out_dir", required=True, help="Base output directory.")
+    parser.add_argument(
+        "--img_size",
+        type=int,
+        default=224,
+        help="Unused compatibility argument. Raw extraction keeps original source image size.",
+    )
     args = parser.parse_args()
 
     data_dir = Path(args.data_dir)

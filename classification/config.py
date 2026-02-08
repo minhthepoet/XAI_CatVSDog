@@ -16,7 +16,12 @@ def get_args():
     parser.add_argument("--img_size", type=int, default=224)
     parser.add_argument("--seed", type=int, required=True)
     parser.add_argument("--save_dir", type=str, required=True)
-    parser.add_argument("--run_name", type=str, required=True)
+    parser.add_argument(
+        "--run_name",
+        type=str,
+        default="default_run",
+        help="Subfolder name under --save_dir (default: default_run).",
+    )
     parser.add_argument("--resume", type=str, default=None)
     parser.add_argument("--dropout", type=float, default=0.3)
     parser.add_argument("--val_split", type=float, default=0.1)

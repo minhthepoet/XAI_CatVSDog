@@ -1,0 +1,10 @@
+# Ignore model weights
+weights/
+*.pt
+*.pth
+*.ckpt
+
+# Python cache
+__pycache__/
+*.pyc
+

@@ -21,6 +21,11 @@ python Segment_With_Part/run.py \
 
 import json
 import traceback
+
+try:
+    from tqdm.auto import tqdm
+except Exception:
+    tqdm = None
 from dataclasses import asdict
 from pathlib import Path
 from typing import List, Sequence, Tuple
@@ -153,7 +158,11 @@ def main() -> None:
         "device": device,
     }
 
-    for image_path in run_images:
+    iterable = enumerate(run_images, start=1)
+    if tqdm is not None:
+        iterable = tqdm(iterable, total=len(run_images), desc="Bounding boxes", unit="img")
+
+    for idx, image_path in iterable:
         rel = image_path.relative_to(data_dir)
         out_subdir = out_dir / rel.parent
         out_subdir.mkdir(parents=True, exist_ok=True)
@@ -162,8 +171,16 @@ def main() -> None:
         json_path = out_subdir / f"{stem}.json"
         overlay_path = out_subdir / f"{stem}_boxes_labeled.png"
 
+        status_prefix = f"[{idx}/{len(run_images)}] {rel}"
+        if tqdm is None:
+            print(f"{status_prefix} -> processing", flush=True)
+        else:
+            iterable.set_postfix_str(str(rel))
+
         if should_skip(json_path, overlay_path, args.skip_existing, args.write_mode):
             summary["skipped"] += 1
+            if tqdm is None:
+                print(f"{status_prefix} -> skipped(existing)", flush=True)
             continue
 
         try:
@@ -214,6 +231,8 @@ def main() -> None:
                 save_labeled_boxes_image(image=image, parts=selected_parts, output_path=overlay_path)
 
             summary["processed"] += 1
+            if tqdm is None:
+                print(f"{status_prefix} -> done (parts={len(selected_parts)})", flush=True)
 
         except Exception as exc:
             summary["failed"] += 1
@@ -224,6 +243,8 @@ def main() -> None:
                     "trace": traceback.format_exc(limit=1),
                 }
             )
+            if tqdm is None:
+                print(f"{status_prefix} -> failed: {exc}", flush=True)
             continue
 
     with open(out_dir / "run_summary.json", "w", encoding="utf-8") as f:

@@ -6,7 +6,7 @@ python -m classification.train \
   --batch_size 64 \
   --lr 1e-4 \
   --save_dir ./runs \
-  --run_name resnet18_pretrained \
+  --run_name my_experiment \
   --saveEvery 10
 
 Expected data layout:

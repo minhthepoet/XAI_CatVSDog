@@ -63,6 +63,18 @@ PART_TAXONOMY: Dict[str, List[PartSpec]] = {
         PartSpec("mouth", ["dog mouth", "dog muzzle"]),
         PartSpec("left_ear", ["dog left ear", "left ear of the dog"]),
         PartSpec("right_ear", ["dog right ear", "right ear of the dog"]),
+        PartSpec(
+            "body",
+            ["dog body", "dog torso", "body of the dog"],
+            size_prior=SizePrior(min_area_ratio=0.08, max_area_ratio=0.98),
+            aspect_prior=AspectPrior(min_ar=0.35, max_ar=5.0),
+        ),
+        PartSpec(
+            "tail",
+            ["dog tail", "tail of the dog"],
+            size_prior=SizePrior(min_area_ratio=0.001, max_area_ratio=0.12),
+            aspect_prior=AspectPrior(min_ar=0.08, max_ar=8.0),
+        ),
     ],
     "cat": [
         PartSpec("left_eye", ["cat left eye", "left eye of the cat"]),
@@ -71,6 +83,18 @@ PART_TAXONOMY: Dict[str, List[PartSpec]] = {
         PartSpec("mouth", ["cat mouth"]),
         PartSpec("left_ear", ["cat left ear"]),
         PartSpec("right_ear", ["cat right ear"]),
+        PartSpec(
+            "body",
+            ["cat body", "cat torso", "body of the cat"],
+            size_prior=SizePrior(min_area_ratio=0.08, max_area_ratio=0.98),
+            aspect_prior=AspectPrior(min_ar=0.35, max_ar=5.0),
+        ),
+        PartSpec(
+            "tail",
+            ["cat tail", "tail of the cat"],
+            size_prior=SizePrior(min_area_ratio=0.001, max_area_ratio=0.12),
+            aspect_prior=AspectPrior(min_ar=0.08, max_ar=8.0),
+        ),
     ],
 }
 
@@ -264,7 +288,6 @@ def run_part_box_pipeline(
                     continue
                 area_ratio = box_area(b) / image_area
                 loc_penalty = max(0.0, 1.0 - box_iou(b, object_bbox))
-                # Add center penalty so tiny random highlights far away are less likely.
                 cx = (b[0] + b[2]) * 0.5
                 cy = (b[1] + b[3]) * 0.5
                 ocx = (object_bbox[0] + object_bbox[2]) * 0.5
@@ -286,79 +309,46 @@ def run_part_box_pipeline(
                 break
         return cands
 
-    # Eye-specialized stage: detect generic eyes first, then assign left/right by x-position.
-    # This is more stable than asking GroundingDINO for left/right separately.
-    left_eye_spec = specs_by_name.get('left_eye')
-    right_eye_spec = specs_by_name.get('right_eye')
     preselected: Dict[str, CandidateBox] = {}
-    if left_eye_spec and right_eye_spec:
-        eye_proxy = PartSpec(
-            part_name='eye',
-            prompt_phrases=[f'{category} eye', f'eyes of the {category}', f'{category} face eye'],
-            expected_count=2,
-            size_prior=left_eye_spec.size_prior,
-            aspect_prior=left_eye_spec.aspect_prior,
-        )
-        eye_candidates = collect_candidates(
-            eye_proxy,
-            eye_proxy.prompt_phrases,
-            max(0.05, box_threshold * 0.75),
-            max(0.05, text_threshold * 0.75),
-        )
-        eye_candidates = nms_candidates(eye_candidates, min(0.45, nms_iou))
-        eye_candidates.sort(key=lambda c: c.final_score, reverse=True)
 
-        if len(eye_candidates) >= 2:
-            pair = eye_candidates[:2]
+    # Bilateral helper for eyes/ears
+    def bilateral_stage(base: str, left_name: str, right_name: str, stage_ratio: float) -> None:
+        left_spec = specs_by_name.get(left_name)
+        right_spec = specs_by_name.get(right_name)
+        if not left_spec or not right_spec:
+            return
+        proxy = PartSpec(
+            part_name=base,
+            prompt_phrases=[f'{category} {base}', f'{base}s of the {category}', f'{category} head {base}'],
+            expected_count=2,
+            size_prior=left_spec.size_prior,
+            aspect_prior=left_spec.aspect_prior,
+        )
+        candidates = collect_candidates(
+            proxy,
+            proxy.prompt_phrases,
+            max(0.05, box_threshold * stage_ratio),
+            max(0.05, text_threshold * stage_ratio),
+        )
+        candidates = nms_candidates(candidates, min(0.45, nms_iou))
+        candidates.sort(key=lambda c: c.final_score, reverse=True)
+        if len(candidates) >= 2:
+            pair = candidates[:2]
             pair.sort(key=lambda c: (c.box_xyxy[0] + c.box_xyxy[2]) * 0.5)
-            left_cand, right_cand = pair[0], pair[1]
-            left_cand.part_name = 'left_eye'
-            right_cand.part_name = 'right_eye'
-            preselected['left_eye'] = left_cand
-            preselected['right_eye'] = right_cand
-        elif len(eye_candidates) == 1:
-            only = eye_candidates[0]
+            pair[0].part_name = left_name
+            pair[1].part_name = right_name
+            preselected[left_name] = pair[0]
+            preselected[right_name] = pair[1]
+        elif len(candidates) == 1:
+            only = candidates[0]
             cx = (only.box_xyxy[0] + only.box_xyxy[2]) * 0.5
             ocx = (object_bbox[0] + object_bbox[2]) * 0.5
-            side = 'left_eye' if cx <= ocx else 'right_eye'
+            side = left_name if cx <= ocx else right_name
             only.part_name = side
             preselected[side] = only
 
-
-    left_ear_spec = specs_by_name.get('left_ear')
-    right_ear_spec = specs_by_name.get('right_ear')
-    if left_ear_spec and right_ear_spec:
-        ear_proxy = PartSpec(
-            part_name='ear',
-            prompt_phrases=[f'{category} ear', f'ears of the {category}', f'{category} head ear'],
-            expected_count=2,
-            size_prior=left_ear_spec.size_prior,
-            aspect_prior=left_ear_spec.aspect_prior,
-        )
-        ear_candidates = collect_candidates(
-            ear_proxy,
-            ear_proxy.prompt_phrases,
-            max(0.05, box_threshold * 0.7),
-            max(0.05, text_threshold * 0.7),
-        )
-        ear_candidates = nms_candidates(ear_candidates, min(0.45, nms_iou))
-        ear_candidates.sort(key=lambda c: c.final_score, reverse=True)
-
-        if len(ear_candidates) >= 2:
-            pair = ear_candidates[:2]
-            pair.sort(key=lambda c: (c.box_xyxy[0] + c.box_xyxy[2]) * 0.5)
-            left_cand, right_cand = pair[0], pair[1]
-            left_cand.part_name = 'left_ear'
-            right_cand.part_name = 'right_ear'
-            preselected['left_ear'] = left_cand
-            preselected['right_ear'] = right_cand
-        elif len(ear_candidates) == 1:
-            only = ear_candidates[0]
-            cx = (only.box_xyxy[0] + only.box_xyxy[2]) * 0.5
-            ocx = (object_bbox[0] + object_bbox[2]) * 0.5
-            side = 'left_ear' if cx <= ocx else 'right_ear'
-            only.part_name = side
-            preselected[side] = only
+    bilateral_stage('eye', 'left_eye', 'right_eye', 0.75)
+    bilateral_stage('ear', 'left_ear', 'right_ear', 0.70)
 
     for pname, cand in preselected.items():
         all_selected_cands.append(cand)
@@ -372,8 +362,9 @@ def run_part_box_pipeline(
             )
         )
 
+    skip_names = {'left_eye', 'right_eye', 'left_ear', 'right_ear'}
     for spec in PART_TAXONOMY[category]:
-        if spec.part_name in preselected or spec.part_name in {'left_eye', 'right_eye', 'left_ear', 'right_ear'}:
+        if spec.part_name in preselected or spec.part_name in skip_names:
             continue
 
         part_candidates = collect_candidates(spec, spec.prompt_phrases, box_threshold, text_threshold)
@@ -382,13 +373,12 @@ def run_part_box_pipeline(
             continue
 
         kept_for_part = nms_candidates(part_candidates, nms_iou)
+        if not kept_for_part:
+            dropped.append({"part_name": spec.part_name, "reason": "nms_filtered"})
+            continue
         best = kept_for_part[0]
 
-        duplicate = False
-        for prev in all_selected_cands:
-            if box_iou(best.box_xyxy, prev.box_xyxy) >= nms_iou:
-                duplicate = True
-                break
+        duplicate = any(box_iou(best.box_xyxy, prev.box_xyxy) >= nms_iou for prev in all_selected_cands)
         if duplicate:
             dropped.append({"part_name": spec.part_name, "reason": "global_nms_filtered"})
             continue
@@ -404,6 +394,66 @@ def run_part_box_pipeline(
             )
         )
 
+    # Leg stage: detect any visible legs, label leg_1..leg_N (N<=4) left->right.
+    leg_proxy = PartSpec(
+        part_name='leg',
+        prompt_phrases=[f'{category} leg', f'legs of the {category}', f'{category} paw'],
+        expected_count=4,
+        size_prior=SizePrior(min_area_ratio=0.003, max_area_ratio=0.2),
+        aspect_prior=AspectPrior(min_ar=0.08, max_ar=4.5),
+    )
+    leg_candidates = collect_candidates(
+        leg_proxy,
+        leg_proxy.prompt_phrases,
+        max(0.05, box_threshold * 0.8),
+        max(0.05, text_threshold * 0.8),
+    )
+
+    # Strict filtering: keep only confident legs in lower body region.
+    obj_h = max(1.0, object_bbox[3] - object_bbox[1])
+    lower_y = object_bbox[1] + 0.45 * obj_h
+    strict_legs: List[CandidateBox] = []
+    for cand in leg_candidates:
+        cx = (cand.box_xyxy[0] + cand.box_xyxy[2]) * 0.5
+        cy = (cand.box_xyxy[1] + cand.box_xyxy[3]) * 0.5
+        if cy < lower_y:
+            continue
+        if cand.final_score < max(0.2, box_threshold * 0.9):
+            continue
+        if not (object_bbox[0] - 0.1 * (object_bbox[2] - object_bbox[0]) <= cx <= object_bbox[2] + 0.1 * (object_bbox[2] - object_bbox[0])):
+            continue
+        strict_legs.append(cand)
+
+    strict_legs = nms_candidates(strict_legs, min(0.35, nms_iou))
+    strict_legs.sort(key=lambda c: c.final_score, reverse=True)
+
+    final_legs: List[CandidateBox] = []
+    for cand in strict_legs:
+        if any(box_iou(cand.box_xyxy, prev.box_xyxy) >= 0.35 for prev in final_legs):
+            continue
+        if any(box_iou(cand.box_xyxy, prev.box_xyxy) >= nms_iou for prev in all_selected_cands):
+            continue
+        final_legs.append(cand)
+        if len(final_legs) >= 4:
+            break
+
+    final_legs.sort(key=lambda c: (c.box_xyxy[0] + c.box_xyxy[2]) * 0.5)
+    for idx, cand in enumerate(final_legs, start=1):
+        label = f'leg_{idx}'
+        selected_parts.append(
+            SelectedPart(
+                part_name=label,
+                prompt_used=cand.phrase,
+                box_xyxy=cand.box_xyxy,
+                box_xyxy_expanded=expand_box(cand.box_xyxy, w, h, box_expand),
+                box_score=cand.final_score,
+            )
+        )
+        all_selected_cands.append(cand)
+
+    if not final_legs:
+        dropped.append({"part_name": "leg", "reason": "no_confident_leg_found"})
+
     # Retry bilateral parts with relaxed thresholds.
     existing = {p.part_name for p in selected_parts}
     for miss in ('left_eye', 'right_eye', 'left_ear', 'right_ear'):
@@ -412,7 +462,6 @@ def run_part_box_pipeline(
             retry_phrases = spec.prompt_phrases + [
                 f"{category} {'eye' if 'eye' in miss else 'ear'}"
             ]
-
             retry = collect_candidates(spec, retry_phrases, max(0.05, box_threshold * 0.65), max(0.05, text_threshold * 0.65))
             if retry:
                 cand = nms_candidates(retry, nms_iou)[0]

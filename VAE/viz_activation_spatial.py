@@ -45,6 +45,18 @@ def parse_args():
     )
     parser.add_argument("--use_abs", action="store_true")
     parser.add_argument("--percentile_norm", type=float, default=99.5)
+    parser.add_argument(
+        "--drive_out_dir",
+        type=str,
+        default="",
+        help="Optional second output root (e.g., Google Drive path). Files are saved to both out_dir and drive_out_dir.",
+    )
+    parser.add_argument(
+        "--show_inline",
+        action="store_true",
+        help="Try to display summary images inline (works best with %%run / direct notebook execution).",
+    )
+    parser.add_argument("--show_max", type=int, default=8)
     return parser.parse_args()
 
 
@@ -296,10 +308,24 @@ def save_grid_summary(
     plt.close(fig)
 
 
+def show_inline_image(path: Path):
+    try:
+        from IPython.display import display
+    except Exception:
+        return
+    try:
+        with Image.open(path) as im:
+            display(im.copy())
+    except Exception:
+        return
+
+
 def main():
     args = parse_args()
     root = Path(args.root)
-    out_root = Path(args.out_dir)
+    out_roots = [Path(args.out_dir)]
+    if args.drive_out_dir.strip():
+        out_roots.append(Path(args.drive_out_dir))
     layers = [x.strip() for x in args.layers.split(",") if x.strip()]
 
     samples = _scan_samples(root, args.cls)
@@ -311,6 +337,8 @@ def main():
     samples = samples[:max_items]
 
     print(f"Found {len(samples)} samples to visualize.")
+    print(f"Output roots: {', '.join(str(p) for p in out_roots)}")
+    shown = 0
     for cls_name, sample_id, img_path, acts_path in tqdm(samples, desc="Visualize"):
         full_ref_acts_path = None
         if args.delta_ref == "full":
@@ -326,8 +354,11 @@ def main():
         if img_rgb is None or layer_to_act is None:
             continue
 
-        sample_out_dir = out_root / cls_name / sample_id
-        sample_out_dir.mkdir(parents=True, exist_ok=True)
+        sample_out_dirs = []
+        for out_root in out_roots:
+            sample_out_dir = out_root / cls_name / sample_id
+            sample_out_dir.mkdir(parents=True, exist_ok=True)
+            sample_out_dirs.append(sample_out_dir)
 
         overlay_dict: Dict[str, np.ndarray] = {}
         for layer_name, A in layer_to_act.items():
@@ -338,27 +369,33 @@ def main():
             overlay = overlay_heatmap(img_rgb, M_up, alpha=args.overlay_alpha)
             overlay_dict[layer_name] = overlay
 
-            _save_heat_png(M_up, sample_out_dir / f"heat_{layer_name}.png")
-            _save_rgb_png(overlay, sample_out_dir / f"overlay_{layer_name}.png")
+            for sample_out_dir in sample_out_dirs:
+                _save_heat_png(M_up, sample_out_dir / f"heat_{layer_name}.png")
+                _save_rgb_png(overlay, sample_out_dir / f"overlay_{layer_name}.png")
+                save_topk_channels(
+                    A=A,
+                    layer_name=layer_name,
+                    sample_out_dir=sample_out_dir,
+                    topk=args.topk_channels,
+                    use_abs=args.use_abs,
+                    percentile_norm=args.percentile_norm,
+                )
 
-            save_topk_channels(
-                A=A,
-                layer_name=layer_name,
-                sample_out_dir=sample_out_dir,
-                topk=args.topk_channels,
-                use_abs=args.use_abs,
-                percentile_norm=args.percentile_norm,
-            )
+        summary_path = None
+        for sample_out_dir in sample_out_dirs:
+            _save_rgb_png(img_rgb, sample_out_dir / "original.png")
+            if args.mode == "grid":
+                summary_path = sample_out_dir / "summary_grid.png"
+                save_grid_summary(
+                    img_rgb=img_rgb,
+                    overlay_dict=overlay_dict,
+                    out_path=summary_path,
+                )
 
-        _save_rgb_png(img_rgb, sample_out_dir / "original.png")
-        if args.mode == "grid":
-            save_grid_summary(
-                img_rgb=img_rgb,
-                overlay_dict=overlay_dict,
-                out_path=sample_out_dir / "summary_grid.png",
-            )
+        if args.show_inline and args.mode == "grid" and summary_path is not None and shown < args.show_max:
+            show_inline_image(summary_path)
+            shown += 1
 
 
 if __name__ == "__main__":
     main()
-

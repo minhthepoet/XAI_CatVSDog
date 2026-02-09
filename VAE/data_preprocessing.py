@@ -8,6 +8,7 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 from torchvision import transforms
+from tqdm.auto import tqdm
 
 
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
@@ -39,14 +40,21 @@ class PairedActsDataset(Dataset):
         self.transform = transform if transform is not None else build_image_transform()
         self.stats_path = Path(exp_root) / "acts_stats_merged.pt"
 
+        print("[Data] Scanning paired files in cat/ and dog/ ...", flush=True)
         self.samples = self._scan_and_filter()
+        print(f"[Data] Valid pairs after pre-filter: {len(self.samples)}", flush=True)
         if len(self.samples) == 0:
             raise RuntimeError("No valid (image, acts) pairs found in data_dir.")
 
         self.mean = None
         self.std = None
         if self.normalize_acts:
+            print("[Data] normalize_acts=True -> loading/computing merged activation stats ...", flush=True)
             self.mean, self.std = self._load_or_compute_stats()
+            print(
+                f"[Data] Stats ready: mean={tuple(self.mean.shape)}, std={tuple(self.std.shape)}",
+                flush=True,
+            )
 
     def _scan_and_filter(self) -> List[Tuple[Path, Path, str]]:
         valid_samples: List[Tuple[Path, Path, str]] = []
@@ -56,7 +64,9 @@ class PairedActsDataset(Dataset):
                 warnings.warn(f"Missing class directory: {class_dir}")
                 continue
 
-            for img_path in sorted(class_dir.glob("*.png")):
+            image_paths = sorted(class_dir.glob("*.png"))
+            print(f"[Data] {cls_name}: found {len(image_paths)} .png files", flush=True)
+            for img_path in tqdm(image_paths, desc=f"[Scan {cls_name}]", leave=False):
                 sample_id = img_path.stem
                 acts_path = class_dir / f"{sample_id}__acts.pt"
                 if not acts_path.exists():
@@ -119,6 +129,7 @@ class PairedActsDataset(Dataset):
 
     def _load_or_compute_stats(self):
         if self.stats_path.exists():
+            print(f"[Data] Loading cached stats from: {self.stats_path}", flush=True)
             payload = torch.load(self.stats_path, map_location="cpu")
             mean = payload["mean"].float()
             std = payload["std"].float()
@@ -129,7 +140,8 @@ class PairedActsDataset(Dataset):
         count = 0
         used = 0
 
-        for _, acts_path, sample_id in self.samples:
+        print("[Data] Computing channel-wise mean/std over merged activations ...", flush=True)
+        for _, acts_path, sample_id in tqdm(self.samples, desc="[Stats]", leave=False):
             try:
                 acts = torch.load(acts_path, map_location="cpu")
                 merged = self._merge_acts(acts).to(torch.float64)
@@ -161,6 +173,7 @@ class PairedActsDataset(Dataset):
             "num_samples": used,
             "keys_order": ACT_KEYS,
         }
+        print(f"[Data] Saving stats cache to: {self.stats_path}", flush=True)
         torch.save(payload, self.stats_path)
         return mean, std
 
@@ -195,6 +208,7 @@ class PairedActsDataset(Dataset):
 
 
 def build_dataloader(args, exp_root):
+    print("[Data] Building training dataset ...", flush=True)
     dataset = PairedActsDataset(
         data_dir=args.data_dir,
         target_hw=args.target_hw,
@@ -202,6 +216,7 @@ def build_dataloader(args, exp_root):
         exp_root=exp_root,
         transform=build_image_transform(),
     )
+    print("[Data] Building DataLoader ...", flush=True)
     loader = DataLoader(
         dataset,
         batch_size=args.batch_size,
@@ -209,5 +224,8 @@ def build_dataloader(args, exp_root):
         num_workers=args.num_workers,
         pin_memory=torch.cuda.is_available(),
     )
+    print(
+        f"[Data] DataLoader ready: samples={len(dataset)}, batches/epoch={len(loader)}",
+        flush=True,
+    )
     return loader
-

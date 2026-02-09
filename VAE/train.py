@@ -61,12 +61,24 @@ def main():
 
     device = resolve_device(args.device)
     use_amp = bool(args.amp and device.type == "cuda")
-    scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
+    if hasattr(torch, "amp") and hasattr(torch.amp, "GradScaler"):
+        scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
+    else:
+        scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
 
+    print("[Train] Starting CVAE training", flush=True)
+    print(f"[Train] Device: {device}", flush=True)
+    print(f"[Train] AMP enabled: {use_amp}", flush=True)
+    print(f"[Train] Experiment root: {exp_root}", flush=True)
+    print(f"[Train] Args: {vars(args)}", flush=True)
+
+    print("[Train] Step 1/4: Build dataloader", flush=True)
     train_loader = build_dataloader(args, exp_root)
     dataset = train_loader.dataset
     stats_path = str(dataset.stats_path) if getattr(dataset, "normalize_acts", False) else ""
+    print("[Train] Step 1/4 done", flush=True)
 
+    print("[Train] Step 2/4: Build model + optimizer", flush=True)
     model = ConditionalVAE(
         latent_dim=args.latent_dim,
         target_hw=args.target_hw,
@@ -74,10 +86,12 @@ def main():
         beta=args.beta,
     ).to(device)
     optimizer = AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    print("[Train] Step 2/4 done", flush=True)
 
     start_epoch = 1
     global_step = 0
 
+    print("[Train] Step 3/4: Resume checkpoint (if provided)", flush=True)
     if args.resume:
         ckpt = torch.load(args.resume, map_location=device)
         model.load_state_dict(ckpt["model_state"])
@@ -87,10 +101,13 @@ def main():
         start_epoch = int(ckpt["epoch"]) + 1
         global_step = int(ckpt.get("global_step", 0))
         print(f"Resumed from {args.resume} at epoch {start_epoch}", flush=True)
+    print("[Train] Step 3/4 done", flush=True)
 
+    print("[Train] Step 4/4: Training loop", flush=True)
     logs_path = os.path.join(exp_root, "logs", "train_log.jsonl")
     with open(logs_path, "a", encoding="utf-8") as log_f:
         for epoch in range(start_epoch, args.epochs + 1):
+            print(f"[Train] Epoch {epoch}/{args.epochs} started", flush=True)
             model.train()
             running_loss = 0.0
             running_recon = 0.0
@@ -104,7 +121,11 @@ def main():
 
                 optimizer.zero_grad(set_to_none=True)
 
-                with torch.cuda.amp.autocast(enabled=use_amp):
+                if hasattr(torch, "amp") and hasattr(torch.amp, "autocast"):
+                    autocast_ctx = torch.amp.autocast(device_type="cuda", enabled=use_amp)
+                else:
+                    autocast_ctx = torch.cuda.amp.autocast(enabled=use_amp)
+                with autocast_ctx:
                     y_hat, mu, logvar = model(x_img, y_merged)
                     recon = model.recon_mse_loss(y_hat, y_merged)
                     kl = model.kl_loss(mu, logvar)
@@ -171,8 +192,8 @@ def main():
                     stats_path=stats_path,
                 )
                 print(f"Saved checkpoint: {ckpt_path}", flush=True)
+            print(f"[Train] Epoch {epoch}/{args.epochs} finished", flush=True)
 
 
 if __name__ == "__main__":
     main()
-

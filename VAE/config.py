@@ -36,14 +36,13 @@ def get_args():
     parser.set_defaults(normalize_acts=True)
 
     # Checkpointing / logging.
-    parser.add_argument("--save_every", type=int, default=3)
+    parser.add_argument("--save_every", type=int, default=1)
     parser.add_argument("--resume", type=str, default="")
     parser.add_argument("--log_every", type=int, default=50)
 
     # Optional.
     parser.add_argument("--amp", action="store_true")
     parser.add_argument("--grad_clip", type=float, default=0.0)
-
     args = parser.parse_args()
 
     if args.save_every <= 0:
@@ -61,4 +60,3 @@ def make_exp_dirs(args):
     os.makedirs(os.path.join(exp_root, "checkpoints"), exist_ok=True)
     os.makedirs(os.path.join(exp_root, "logs"), exist_ok=True)
     return exp_root
-

@@ -8,7 +8,6 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 from torchvision import transforms
-from tqdm.auto import tqdm
 
 
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
@@ -40,21 +39,18 @@ class PairedActsDataset(Dataset):
         self.transform = transform if transform is not None else build_image_transform()
         self.stats_path = Path(exp_root) / "acts_stats_merged.pt"
 
-        print("[Data] Fast pairing mode (no file integrity scan) ...", flush=True)
+        print("[Data] Step 1: Pair image/acts files", flush=True)
         self.samples = self._scan_pairs_fast()
-        print(f"[Data] Paired samples: {len(self.samples)}", flush=True)
+        print(f"[Data] Step 1 done: pairs={len(self.samples)}", flush=True)
         if len(self.samples) == 0:
             raise RuntimeError("No paired (image, acts) samples found in data_dir.")
 
         self.mean = None
         self.std = None
         if self.normalize_acts:
-            print("[Data] normalize_acts=True -> loading/computing merged activation stats ...", flush=True)
+            print("[Data] Step 2: Prepare activation stats", flush=True)
             self.mean, self.std = self._load_or_compute_stats()
-            print(
-                f"[Data] Stats ready: mean={tuple(self.mean.shape)}, std={tuple(self.std.shape)}",
-                flush=True,
-            )
+            print("[Data] Step 2 done: stats ready", flush=True)
 
     def _scan_pairs_fast(self) -> List[Tuple[Path, Path, str]]:
         paired_samples: List[Tuple[Path, Path, str]] = []
@@ -65,8 +61,7 @@ class PairedActsDataset(Dataset):
                 continue
 
             image_paths = sorted(class_dir.glob("*.png"))
-            print(f"[Data] {cls_name}: found {len(image_paths)} .png files", flush=True)
-            for img_path in tqdm(image_paths, desc=f"[Scan {cls_name}]", leave=False):
+            for img_path in image_paths:
                 sample_id = img_path.stem
                 acts_path = class_dir / f"{sample_id}__acts.pt"
                 if not acts_path.exists():
@@ -111,7 +106,7 @@ class PairedActsDataset(Dataset):
 
     def _load_or_compute_stats(self):
         if self.stats_path.exists():
-            print(f"[Data] Loading cached stats from: {self.stats_path}", flush=True)
+            print(f"[Data] Load cached stats: {self.stats_path}", flush=True)
             payload = torch.load(self.stats_path, map_location="cpu")
             mean = payload["mean"].float()
             std = payload["std"].float()
@@ -122,8 +117,8 @@ class PairedActsDataset(Dataset):
         count = 0
         used = 0
 
-        print("[Data] Computing channel-wise mean/std over merged activations ...", flush=True)
-        for _, acts_path, sample_id in tqdm(self.samples, desc="[Stats]", leave=False):
+        print("[Data] Compute stats from dataset (this can take time)...", flush=True)
+        for _, acts_path, sample_id in self.samples:
             try:
                 acts = torch.load(acts_path, map_location="cpu")
                 merged = self._merge_acts(acts).to(torch.float64)
@@ -155,8 +150,8 @@ class PairedActsDataset(Dataset):
             "num_samples": used,
             "keys_order": ACT_KEYS,
         }
-        print(f"[Data] Saving stats cache to: {self.stats_path}", flush=True)
         torch.save(payload, self.stats_path)
+        print(f"[Data] Saved stats cache: {self.stats_path}", flush=True)
         return mean, std
 
     def __len__(self):
@@ -182,7 +177,7 @@ class PairedActsDataset(Dataset):
 
 
 def build_dataloader(args, exp_root):
-    print("[Data] Building training dataset ...", flush=True)
+    print("[Data] Build dataset", flush=True)
     dataset = PairedActsDataset(
         data_dir=args.data_dir,
         target_hw=args.target_hw,
@@ -190,7 +185,6 @@ def build_dataloader(args, exp_root):
         exp_root=exp_root,
         transform=build_image_transform(),
     )
-    print("[Data] Building DataLoader ...", flush=True)
     loader_kwargs = {
         "batch_size": args.batch_size,
         "shuffle": True,
@@ -205,8 +199,5 @@ def build_dataloader(args, exp_root):
         dataset,
         **loader_kwargs,
     )
-    print(
-        f"[Data] DataLoader ready: samples={len(dataset)}, batches/epoch={len(loader)}",
-        flush=True,
-    )
+    print(f"[Data] Build dataloader done: batches={len(loader)}", flush=True)
     return loader

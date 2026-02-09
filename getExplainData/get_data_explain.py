@@ -1,5 +1,6 @@
 import argparse
 import importlib.util
+import shutil
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -10,6 +11,7 @@ from PIL import Image
 
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
+BACKBONE_STAGES = ("stem", "layer1", "layer2", "layer3", "layer4")
 PROGRESS_EVERY = 10
 
 
@@ -32,8 +34,7 @@ def build_model_from_module(module):
 
     if hasattr(module, "build_model"):
         builder = getattr(module, "build_model")
-        dummy_args = SimpleNamespace(dropout=0.3)
-        return builder(dummy_args)
+        return builder(SimpleNamespace(dropout=0.3))
 
     raise RuntimeError("Model module must expose DogCatResNetClassifier or build_model(args).")
 
@@ -74,24 +75,54 @@ def build_color_mask(image: Image.Image) -> torch.Tensor:
     return (tensor.sum(dim=0, keepdim=True) > 3).to(dtype=torch.float32)
 
 
-def process_image(img_path: Path, out_png: Path, out_act_pt: Path, out_grad_pt: Path, model, device, layer4_module):
+def scan_images(data_dir: Path):
+    files = []
+    for category in ("cat", "dog"):
+        category_dir = data_dir / category
+        if category_dir.exists():
+            files.extend((category, p) for p in sorted(category_dir.glob("*.png")))
+    return files
+
+
+def process_image(img_path: Path, out_dir: Path, model, device):
     try:
         image = Image.open(img_path).convert("RGB")
     except Exception as exc:
         print(f"[WARN] Failed to open image: {img_path} ({exc})")
         return False
 
-    x = preprocess_image(image).unsqueeze(0).to(device)
-    # Keep only pixels that are not pure black in the original masked image.
-    color_mask = build_color_mask(image).unsqueeze(0).to(device)
+    x = preprocess_image(image)
+    color_mask = build_color_mask(image)
+
+    x = x.unsqueeze(0).to(device)
+    color_mask = color_mask.unsqueeze(0).to(device)
     x = x * color_mask
-    activation_holder = {}
 
-    def hook_fn(_module, _inputs, output):
-        activation_holder["act"] = output
-        output.retain_grad()
+    if not hasattr(model, "backbone"):
+        print(f"[WARN] Missing model.backbone for {img_path}")
+        return False
 
-    hook_handle = layer4_module.register_forward_hook(hook_fn)
+    acts = {}
+    hooks = []
+
+    for stage_name in BACKBONE_STAGES:
+        stage_module = getattr(model.backbone, stage_name, None)
+        if stage_module is None:
+            continue
+
+        def make_hook(layer_name):
+            def hook_fn(_module, _inputs, output):
+                acts[layer_name] = output
+                output.retain_grad()
+
+            return hook_fn
+
+        hooks.append(stage_module.register_forward_hook(make_hook(stage_name)))
+
+    if not hooks:
+        print(f"[WARN] No backbone stages found for hooks: {img_path}")
+        return False
+
     try:
         model.zero_grad(set_to_none=True)
         logits = model(x)
@@ -101,25 +132,40 @@ def process_image(img_path: Path, out_png: Path, out_act_pt: Path, out_grad_pt: 
         target.backward(retain_graph=False)
     except Exception as exc:
         print(f"[WARN] Forward/backward failed for {img_path} ({exc})")
-        hook_handle.remove()
         return False
     finally:
-        hook_handle.remove()
+        for handle in hooks:
+            handle.remove()
 
-    activation = activation_holder.get("act")
-    if activation is None or activation.grad is None:
-        print(f"[WARN] Missing activation gradient for {img_path}")
+    acts_out = {}
+    grads_out = {}
+
+    for stage_name in BACKBONE_STAGES:
+        activation = acts.get(stage_name)
+        if activation is None:
+            continue
+
+        grad = activation.grad
+        if grad is None:
+            print(f"[WARN] Missing gradient for {img_path} layer={stage_name}")
+            continue
+
+        mask_small = F.interpolate(color_mask, size=activation.shape[-2:], mode="nearest")
+        acts_out[stage_name] = (activation.detach() * mask_small).to(dtype=torch.float32).cpu()
+        grads_out[stage_name] = (grad.detach() * mask_small).to(dtype=torch.float32).cpu()
+
+    if not acts_out:
+        print(f"[WARN] No valid captured layers for {img_path}")
         return False
 
-    act = activation.detach()
-    grad = activation.grad.detach()
-    mask_small = F.interpolate(color_mask, size=act.shape[-2:], mode="nearest")
-    act = (act * mask_small).to(dtype=torch.float32).cpu()
-    grad = (grad * mask_small).to(dtype=torch.float32).cpu()
+    out_png = out_dir / img_path.name
+    out_acts = out_dir / f"{img_path.stem}__acts.pt"
+    out_grads = out_dir / f"{img_path.stem}__grads.pt"
+
     try:
-        image.save(out_png, format="PNG")
-        torch.save(act, out_act_pt)
-        torch.save(grad, out_grad_pt)
+        shutil.copy2(img_path, out_png)
+        torch.save(acts_out, out_acts)
+        torch.save(grads_out, out_grads)
     except Exception as exc:
         print(f"[WARN] Failed to save outputs for {img_path} ({exc})")
         return False
@@ -127,20 +173,11 @@ def process_image(img_path: Path, out_png: Path, out_act_pt: Path, out_grad_pt: 
     return True
 
 
-def scan_images(data_dir: Path):
-    files = []
-    for category in ("cat", "dog"):
-        cat_dir = data_dir / category
-        if cat_dir.exists():
-            files.extend((category, p) for p in sorted(cat_dir.glob("*.png")))
-    return files
-
-
 def main():
-    parser = argparse.ArgumentParser(description="Generate data_explain gradients from raw_data_explain images.")
+    parser = argparse.ArgumentParser(description="Generate multi-layer activations and gradients from raw_data_explain.")
     parser.add_argument("--data_dir", required=True, help="Path to raw_data_explain root (contains cat/ and dog/).")
     parser.add_argument("--out_dir", required=True, help="Base output directory.")
-    parser.add_argument("--model_path", required=True, help="Path to Python file defining the model architecture.")
+    parser.add_argument("--model_path", required=True, help="Path to Python file defining model architecture.")
     parser.add_argument("--ckpt_path", required=True, help="Path to checkpoint file.")
     args = parser.parse_args()
 
@@ -155,10 +192,6 @@ def main():
     model = build_model_from_module(module)
     load_checkpoint(model, Path(args.ckpt_path))
 
-    if not hasattr(model, "backbone") or not hasattr(model.backbone, "layer4"):
-        raise RuntimeError("Model must have model.backbone.layer4 for gradient extraction.")
-    layer4_module = model.backbone.layer4
-
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
     model.eval()
@@ -170,19 +203,7 @@ def main():
 
     for idx, (category, img_path) in enumerate(items, start=1):
         out_dir = out_cat if category == "cat" else out_dog
-        out_png = out_dir / img_path.name
-        out_act_pt = out_dir / f"{img_path.stem}_layer4_act.pt"
-        out_grad_pt = out_dir / f"{img_path.stem}_layer4_grad.pt"
-
-        ok = process_image(
-            img_path=img_path,
-            out_png=out_png,
-            out_act_pt=out_act_pt,
-            out_grad_pt=out_grad_pt,
-            model=model,
-            device=device,
-            layer4_module=layer4_module,
-        )
+        ok = process_image(img_path=img_path, out_dir=out_dir, model=model, device=device)
         if ok:
             total_saved += 1
         else:

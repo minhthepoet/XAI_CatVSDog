@@ -4,15 +4,23 @@ import shutil
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 from PIL import Image
+from torchvision import transforms
 
 
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
 BACKBONE_STAGES = ("stem", "layer1", "layer2", "layer3", "layer4")
 PROGRESS_EVERY = 10
+IMAGE_TRANSFORM = transforms.Compose(
+    [
+        transforms.ToTensor(),
+        transforms.Normalize(IMAGENET_MEAN, IMAGENET_STD),
+    ]
+)
 
 
 def load_model_module(model_path: Path):
@@ -57,22 +65,14 @@ def load_checkpoint(model, ckpt_path: Path):
 
 def preprocess_image(image: Image.Image) -> torch.Tensor:
     image = image.convert("RGB")
-    width, height = image.size
-    tensor = torch.frombuffer(image.tobytes(), dtype=torch.uint8)
-    tensor = tensor.view(height, width, 3).permute(2, 0, 1).contiguous()
-    tensor = tensor.to(dtype=torch.float32) / 255.0
-
-    mean = torch.tensor(IMAGENET_MEAN, dtype=torch.float32).view(3, 1, 1)
-    std = torch.tensor(IMAGENET_STD, dtype=torch.float32).view(3, 1, 1)
-    return (tensor - mean) / std
+    return IMAGE_TRANSFORM(image).to(dtype=torch.float32)
 
 
 def build_color_mask(image: Image.Image) -> torch.Tensor:
     image = image.convert("RGB")
-    width, height = image.size
-    tensor = torch.frombuffer(image.tobytes(), dtype=torch.uint8)
-    tensor = tensor.view(height, width, 3).permute(2, 0, 1).contiguous()
-    return (tensor.sum(dim=0, keepdim=True) > 3).to(dtype=torch.float32)
+    arr = np.array(image, dtype=np.uint8)
+    mask = (arr.sum(axis=2) > 3).astype(np.float32)
+    return torch.from_numpy(mask).unsqueeze(0)
 
 
 def scan_images(data_dir: Path):

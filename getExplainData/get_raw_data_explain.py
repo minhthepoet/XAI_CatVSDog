@@ -128,7 +128,7 @@ def process_category(
     all_candidates = []
     total_skipped_parts = 0
 
-    for json_path in tqdm(json_files, desc=f"scan_{output_subdir}", unit="json"):
+    for json_path in json_files:
         candidates, skipped_parts = collect_candidates_from_json(json_path)
         all_candidates.extend(candidates)
         total_skipped_parts += skipped_parts

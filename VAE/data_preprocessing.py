@@ -40,11 +40,11 @@ class PairedActsDataset(Dataset):
         self.transform = transform if transform is not None else build_image_transform()
         self.stats_path = Path(exp_root) / "acts_stats_merged.pt"
 
-        print("[Data] Scanning paired files in cat/ and dog/ ...", flush=True)
-        self.samples = self._scan_and_filter()
-        print(f"[Data] Valid pairs after pre-filter: {len(self.samples)}", flush=True)
+        print("[Data] Fast pairing mode (no file integrity scan) ...", flush=True)
+        self.samples = self._scan_pairs_fast()
+        print(f"[Data] Paired samples: {len(self.samples)}", flush=True)
         if len(self.samples) == 0:
-            raise RuntimeError("No valid (image, acts) pairs found in data_dir.")
+            raise RuntimeError("No paired (image, acts) samples found in data_dir.")
 
         self.mean = None
         self.std = None
@@ -56,8 +56,8 @@ class PairedActsDataset(Dataset):
                 flush=True,
             )
 
-    def _scan_and_filter(self) -> List[Tuple[Path, Path, str]]:
-        valid_samples: List[Tuple[Path, Path, str]] = []
+    def _scan_pairs_fast(self) -> List[Tuple[Path, Path, str]]:
+        paired_samples: List[Tuple[Path, Path, str]] = []
         for cls_name in ["cat", "dog"]:
             class_dir = self.data_dir / cls_name
             if not class_dir.is_dir():
@@ -72,27 +72,9 @@ class PairedActsDataset(Dataset):
                 if not acts_path.exists():
                     warnings.warn(f"Missing acts file for {sample_id}: {acts_path}")
                     continue
-                if self._pair_is_valid(img_path, acts_path):
-                    valid_samples.append((img_path, acts_path, sample_id))
+                paired_samples.append((img_path, acts_path, sample_id))
 
-        return valid_samples
-
-    def _pair_is_valid(self, img_path: Path, acts_path: Path) -> bool:
-        try:
-            with Image.open(img_path) as im:
-                im.convert("RGB")
-        except Exception as exc:
-            warnings.warn(f"Skipping corrupted image: {img_path} ({exc})")
-            return False
-
-        try:
-            acts = torch.load(acts_path, map_location="cpu")
-            _ = self._merge_acts(acts)
-        except Exception as exc:
-            warnings.warn(f"Skipping corrupted acts: {acts_path} ({exc})")
-            return False
-
-        return True
+        return paired_samples
 
     def _merge_acts(self, acts: Dict[str, torch.Tensor]) -> torch.Tensor:
         if not isinstance(acts, dict):

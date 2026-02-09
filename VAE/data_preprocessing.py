@@ -178,15 +178,7 @@ class PairedActsDataset(Dataset):
         return x_img, y_merged.to(torch.float32), sample_id
 
     def __getitem__(self, idx):
-        # If a file becomes unreadable during training, try following samples.
-        for offset in range(len(self.samples)):
-            j = (idx + offset) % len(self.samples)
-            try:
-                return self._load_item(j)
-            except Exception as exc:
-                _, _, sample_id = self.samples[j]
-                warnings.warn(f"Skipping runtime-broken sample {sample_id}: {exc}")
-        raise RuntimeError("All samples failed to load at runtime.")
+        return self._load_item(idx)
 
 
 def build_dataloader(args, exp_root):
@@ -199,12 +191,19 @@ def build_dataloader(args, exp_root):
         transform=build_image_transform(),
     )
     print("[Data] Building DataLoader ...", flush=True)
+    loader_kwargs = {
+        "batch_size": args.batch_size,
+        "shuffle": True,
+        "num_workers": args.num_workers,
+        "pin_memory": torch.cuda.is_available(),
+    }
+    if args.num_workers > 0:
+        loader_kwargs["persistent_workers"] = True
+        loader_kwargs["prefetch_factor"] = 4
+
     loader = DataLoader(
         dataset,
-        batch_size=args.batch_size,
-        shuffle=True,
-        num_workers=args.num_workers,
-        pin_memory=torch.cuda.is_available(),
+        **loader_kwargs,
     )
     print(
         f"[Data] DataLoader ready: samples={len(dataset)}, batches/epoch={len(loader)}",

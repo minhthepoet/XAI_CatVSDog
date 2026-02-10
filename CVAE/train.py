@@ -8,9 +8,9 @@ from tqdm.auto import tqdm
 
 if __package__ is None or __package__ == "":
     sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from VAE.config import get_args, make_exp_dirs
-    from VAE.data_preprocessing import build_dataloader
-    from VAE.model import ConditionalVAE
+    from CVAE.config import get_args, make_exp_dirs
+    from CVAE.data_preprocessing import build_dataloader
+    from CVAE.model import ConditionalVAE
 else:
     from .config import get_args, make_exp_dirs
     from .data_preprocessing import build_dataloader

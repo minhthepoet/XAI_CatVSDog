@@ -14,8 +14,8 @@ if __package__ is None or __package__ == "":
     import os
     import sys
     sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from VAE.data_preprocessing import PairedActsDataset, build_image_transform
-    from VAE.model import ConditionalVAE
+    from CVAE.data_preprocessing import PairedActsDataset, build_image_transform
+    from CVAE.model import ConditionalVAE
 else:
     from .data_preprocessing import PairedActsDataset, build_image_transform
     from .model import ConditionalVAE
